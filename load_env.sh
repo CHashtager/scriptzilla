@@ -6,7 +6,10 @@ load_env() {
   local env_file="$1"
 
   if [ -f "$env_file" ]; then
-    export $(grep -v '^#' "$env_file" | xargs)
+    # Use set -a to automatically export variables, then source the file
+    set -a
+    source "$env_file"
+    set +a
     echo "✅ Environment variables from '$env_file' have been loaded."
   else
     echo "❌ File '$env_file' not found."
