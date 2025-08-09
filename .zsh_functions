@@ -1,0 +1,108 @@
+# kube-port-forward: Auto-detect kubeconfig, fuzzy-select pod with kubectl-style view
+# Requires: fzf (https://github.com/junegunn/fzf)
+# Usage:
+#   kube-port-forward [env] [namespace] [pattern] [local_port] [remote_port]
+# Examples:
+#   kube-port-forward prod iaas mariadb # default 3303 -> 3306
+#   kube-port-forward stage iaas mysql 3307   # 3307 -> 3306
+#   kube-port-forward stage iaas redis 6380 6379
+
+kube-port-forward() {
+  local ENV="${1:-prod}"
+  local NAMESPACE="${2:-default}"
+  local PATTERN="${3:-mariadb}"
+  local LOCAL_PORT="${4:-3303}"
+  local REMOTE_PORT="${5:-3306}"
+
+  local KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}-${ENV}"
+
+  local PODS
+  PODS=$(kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" get pods \
+    --no-headers | grep -i "$PATTERN")
+
+  if [[ -z "$PODS" ]]; then
+    echo "❌ No pod matching '$PATTERN' found in namespace '$NAMESPACE'"
+    return 1
+  fi
+
+  local POD_NAME
+  local COUNT
+  COUNT=$(echo "$PODS" | wc -l | tr -d ' ')
+
+  if [[ "$COUNT" -gt 1 ]]; then
+    POD_NAME=$(echo "$PODS" | \
+      fzf --prompt="Select pod > " \
+          --header="NAME                                      READY   STATUS             RESTARTS   AGE" \
+          --height=15 --reverse | awk '{print $1}')
+    [[ -z "$POD_NAME" ]] && echo "❌ No pod selected" && return 1
+  else
+    POD_NAME=$(echo "$PODS" | awk '{print $1}')
+  fi
+
+  echo "🚀 Using kubeconfig: $KUBECONFIG_PATH"
+  echo "📦 Namespace: $NAMESPACE"
+  echo "🔍 Pattern: $PATTERN"
+  echo "🐳 Pod: $POD_NAME"
+  echo "🔌 Port-forwarding $LOCAL_PORT -> $REMOTE_PORT ..."
+  
+  kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" \
+    port-forward "$POD_NAME" $LOCAL_PORT:$REMOTE_PORT
+}
+
+
+# kube-log: Auto-detect kubeconfig & namespace, fuzzy-select pods, stream logs
+# Supports multiple selection for aggregated logs
+# Requires: fzf (https://github.com/junegunn/fzf)
+# Usage:
+#   kube-log [env] [namespace] [pattern] [container]
+# Examples:
+#   kube-log prod iaas mariadb
+#   kube-log stage iaas mysql my-container
+
+kube-log() {
+  local ENV="${1:-prod}"
+  local NAMESPACE="${2:-iaas}"
+  local PATTERN="${3:-mariadb}"
+  local CONTAINER="${4:-}"
+
+  local KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}-${ENV}"
+
+  local PODS
+  PODS=$(kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" get pods \
+    --no-headers | grep -i "$PATTERN")
+
+  if [[ -z "$PODS" ]]; then
+    echo "❌ No pod matching '$PATTERN' found in namespace '$NAMESPACE'"
+    return 1
+  fi
+
+  local SELECTED
+  SELECTED=$(echo "$PODS" | \
+    fzf --multi \
+        --prompt="Select pod(s) > " \
+        --header="NAME                                      READY   STATUS             RESTARTS   AGE" \
+        --height=15 --reverse | awk '{print $1}')
+
+  if [[ -z "$SELECTED" ]]; then
+    echo "❌ No pod selected"
+    return 1
+  fi
+
+  echo "🚀 Using kubeconfig: $KUBECONFIG_PATH"
+  echo "📦 Namespace: $NAMESPACE"
+  echo "🔍 Pattern: $PATTERN"
+  echo "📜 Streaming logs from:"
+  echo "$SELECTED" | sed 's/^/   • /'
+  echo "📌 Press Ctrl+C to stop logs"
+
+  trap 'echo "\n🛑 Stopping logs..."; kill $(jobs -p) 2>/dev/null' INT
+
+  while read -r POD; do
+    kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" logs -f "$POD" \
+      ${CONTAINER:+-c "$CONTAINER"} --prefix &
+  done <<< "$SELECTED"
+
+  wait
+
+  trap - INT
+}
