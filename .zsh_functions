@@ -106,3 +106,94 @@ kube-log() {
 
   trap - INT
 }
+
+# kube-exec: Auto-detect kubeconfig, fuzzy-select pod, exec into it
+# Usage:
+#   kube-exec [env] [namespace] [pattern] [container]
+# Examples:
+#   kube-exec prod iaas mariadb
+#   kube-exec stage iaas mysql my-container
+
+kube-exec() {
+  local ENV="${1:-prod}"
+  local NAMESPACE="${2:-default}"
+  local PATTERN="${3:-}"
+  local CONTAINER="${4:-}"
+
+  local KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}-${ENV}"
+
+  local PODS
+  PODS=$(kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" get pods \
+    --no-headers | ( [[ -n "$PATTERN" ]] && grep -i "$PATTERN" || cat ))
+
+  if [[ -z "$PODS" ]]; then
+    echo "❌ No pod found in namespace '$NAMESPACE' matching '$PATTERN'"
+    return 1
+  fi
+
+  local POD_NAME
+  POD_NAME=$(echo "$PODS" | \
+    fzf --prompt="Select pod to exec into > " \
+        --header="NAME                                      READY   STATUS             RESTARTS   AGE" \
+        --height=15 --reverse | awk '{print $1}')
+
+  [[ -z "$POD_NAME" ]] && echo "❌ No pod selected" && return 1
+
+  echo "🚀 Using kubeconfig: $KUBECONFIG_PATH"
+  echo "📦 Namespace: $NAMESPACE"
+  echo "🐳 Pod: $POD_NAME"
+  echo "🔍 Container: ${CONTAINER:-(default)}"
+  echo "💻 Starting bash shell..."
+
+  kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" exec -it "$POD_NAME" \
+    ${CONTAINER:+-c "$CONTAINER"} -- bash
+}
+
+# kube-pods: Auto-detect kubeconfig & namespace, fuzzy-select pods
+# Supports multiple selection, prints 'kubectl get pods' output
+# Usage:
+#   kube-pods [env] [namespace] [pattern]
+# Examples:
+#   kube-pods prod iaas mariadb
+#   kube-pods stage default
+
+kube-pods() {
+  local ENV="${1:-prod}"
+  local NAMESPACE="${2:-default}"
+  local PATTERN="${3:-}"
+
+  local KUBECONFIG_PATH="${KUBECONFIG:-$HOME/.kube/config}-${ENV}"
+
+  local PODS
+  PODS=$(kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" get pods \
+    --no-headers | ( [[ -n "$PATTERN" ]] && grep -i "$PATTERN" || cat ))
+
+  if [[ -z "$PODS" ]]; then
+    echo "❌ No pod found in namespace '$NAMESPACE' matching '$PATTERN'"
+    return 1
+  fi
+
+  local SELECTED
+  SELECTED=$(echo "$PODS" | \
+    fzf --multi \
+        --prompt="Select pod(s) > " \
+        --header="NAME                                      READY   STATUS             RESTARTS   AGE" \
+        --height=15 --reverse | awk '{print $1}')
+
+  if [[ -z "$SELECTED" ]]; then
+    echo "❌ No pod selected"
+    return 1
+  fi
+
+  echo "🚀 Using kubeconfig: $KUBECONFIG_PATH"
+  echo "📦 Namespace: $NAMESPACE"
+  echo "📋 Selected pods:"
+  echo "$SELECTED" | sed 's/^/   • /'
+
+  echo "🔍 Details:"
+  for POD in $SELECTED; do
+    kubectl --kubeconfig "$KUBECONFIG_PATH" -n "$NAMESPACE" get pod "$POD" -o wide
+    echo
+  done
+}
+
